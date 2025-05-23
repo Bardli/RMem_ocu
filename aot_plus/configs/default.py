@@ -38,6 +38,38 @@ class DefaultEngineConfig():
         self.DATA_VISOR_REPEAT = 1
         self.DATA_VISOR_IGNORE_THRESH = 0.2
 
+        # Configuration for specific datasets
+        # This structure can be used by data loading utilities
+        # to get dataset-specific parameters.
+        self.DATASET_CONFIGS = {
+            "EXTRACTED_FRAMES": {
+                "TYPE": "ExtractedFramesTrain",
+                "CONFIG": {
+                    "COMMON": {
+                        "DATA_ANNO_DIR": "./extracted_frames/",
+                        "DATA_IMG_DIR": "./extracted_frames/",
+                        "SEQ_LEN": 1,
+                        "MAX_OBJ_NUM": 10,
+                        "OUTPUT_SIZE": (465, 465),
+                        "ENABLE_PREV_FRAME": False,
+                        "DYNAMIC_MERGE": False,
+                        "REPEAT_TIME": 1,
+                    },
+                    "TRAIN": {
+                        "USE_MERGE": False,
+                        "RGB": True,
+                        "RAND_GAP": 3, # Less relevant for single frames but kept for consistency
+                        "RAND_REVERSE": False,
+                        "MERGE_PROB": 0.0,
+                        "IGNORE_THRESH": 0.0, # Default, can be adjusted
+                        "IGNORE_IN_MERGE": False,
+                    }
+                }
+            }
+        }
+        # Example of how another dataset might be configured if it were to use this structure.
+        # self.DATASET_CONFIGS["YOUTUBEVOS"] = { ... } 
+
         self.PRETRAIN = True
         self.PRETRAIN_FULL = False  # if False, load encoder only
         self.PRETRAIN_MODEL = ''
