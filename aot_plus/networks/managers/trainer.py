@@ -10,10 +10,11 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torchvision import transforms
+import torch.utils.data.distributed # For DistributedSampler
 torch.set_printoptions(linewidth=328)
 
-from dataloaders.train_datasets import DAVIS2017_Train, YOUTUBEVOS_Train, StaticTrain, TEST, VOST_Train, VISOR_Train
-import dataloaders.video_transforms as tr
+from ..dataloaders import build_train_dataset 
+import dataloaders.video_transforms as tr 
 
 from utils.meters import AverageMeter
 from utils.image import label2colormap, masked_image, save_image
@@ -297,99 +298,36 @@ class Trainer(object):
             tr.ToTensor(),
         ])
 
-        train_datasets = []
-        if 'static' in cfg.DATASETS:
-            pretrain_vos_dataset = StaticTrain(
-                cfg.DIR_STATIC,
-                cfg.DATA_RANDOMCROP,
-                seq_len=cfg.DATA_SEQ_LEN,
-                merge_prob=cfg.DATA_DYNAMIC_MERGE_PROB,
-                max_obj_n=cfg.MODEL_MAX_OBJ_NUM,
-            )
-            train_datasets.append(pretrain_vos_dataset)
+        # Delegate dataset creation to build_train_dataset
+        # build_train_dataset will use cfg.DATASETS and cfg.DATASET_CONFIGS
+        train_dataset = build_train_dataset(cfg, transforms=composed_transforms)
 
-        if 'davis2017' in cfg.DATASETS:
-            train_davis_dataset = DAVIS2017_Train(
-                root=cfg.DIR_DAVIS,
-                full_resolution=cfg.TRAIN_DATASET_FULL_RESOLUTION,
-                transform=composed_transforms,
-                repeat_time=cfg.DATA_DAVIS_REPEAT,
-                seq_len=cfg.DATA_SEQ_LEN,
-                rand_gap=cfg.DATA_RANDOM_GAP_DAVIS,
-                rand_reverse=cfg.DATA_RANDOM_REVERSE_SEQ,
-                merge_prob=cfg.DATA_DYNAMIC_MERGE_PROB,
-                max_obj_n=cfg.MODEL_MAX_OBJ_NUM,
-            )
-            train_datasets.append(train_davis_dataset)
+        if train_dataset is None: # build_train_dataset should raise an error if no datasets are loaded
+            self.print_log('Error: build_train_dataset returned None. This should not happen if cfg.DATASETS is populated.')
+            exit(1) 
+        
+        self.print_log(f"Train dataset of type {type(train_dataset).__name__} created successfully.")
 
-        if 'vost' in cfg.DATASETS:
-            train_vost_dataset = VOST_Train(
-                root=cfg.DIR_VOST,
-                transform=composed_transforms,
-                repeat_time=cfg.DATA_VOST_REPEAT,
-                seq_len=cfg.DATA_SEQ_LEN,
-                rand_gap=cfg.DATA_RANDOM_GAP_VOST,
-                rand_reverse=cfg.DATA_RANDOM_REVERSE_SEQ,
-                merge_prob=cfg.DATA_DYNAMIC_MERGE_PROB,
-                max_obj_n=cfg.MODEL_MAX_OBJ_NUM,
-                ignore_thresh=cfg.DATA_VOST_IGNORE_THRESH,
-                ignore_in_merge=cfg.IGNORE_IN_MERGE,
+        if cfg.DIST_ENABLE and self.gpu_num > 1:
+            self.train_sampler = torch.utils.data.distributed.DistributedSampler(
+                train_dataset,
+                num_replicas=self.gpu_num, 
+                rank=self.rank 
             )
-            train_datasets.append(train_vost_dataset)
-
-        if 'visor' in cfg.DATASETS:
-            train_vost_dataset = VISOR_Train(
-                root=cfg.DIR_VISOR,
-                transform=composed_transforms,
-                repeat_time=cfg.DATA_VISOR_REPEAT,
-                seq_len=cfg.DATA_SEQ_LEN,
-                rand_gap=cfg.DATA_RANDOM_GAP_VISOR,
-                rand_reverse=cfg.DATA_RANDOM_REVERSE_SEQ,
-                merge_prob=cfg.DATA_DYNAMIC_MERGE_PROB,
-                max_obj_n=cfg.MODEL_MAX_OBJ_NUM,
-                ignore_thresh=cfg.DATA_VISOR_IGNORE_THRESH,
-            )
-            train_datasets.append(train_vost_dataset)
-
-        if 'youtubevos' in cfg.DATASETS:
-            train_ytb_dataset = YOUTUBEVOS_Train(
-                root=cfg.DIR_YTB,
-                transform=composed_transforms,
-                seq_len=cfg.DATA_SEQ_LEN,
-                rand_gap=cfg.DATA_RANDOM_GAP_YTB,
-                rand_reverse=cfg.DATA_RANDOM_REVERSE_SEQ,
-                merge_prob=cfg.DATA_DYNAMIC_MERGE_PROB,
-                max_obj_n=cfg.MODEL_MAX_OBJ_NUM,
-            )
-            train_datasets.append(train_ytb_dataset)
-
-        if 'test' in cfg.DATASETS:
-            test_dataset = TEST(
-                transform=composed_transforms,
-                seq_len=cfg.DATA_SEQ_LEN,
-            )
-            train_datasets.append(test_dataset)
-
-        if len(train_datasets) > 1:
-            train_dataset = torch.utils.data.ConcatDataset(train_datasets)
-        elif len(train_datasets) == 1:
-            train_dataset = train_datasets[0]
+            shuffle = False # When using DistributedSampler, shuffle must be False
         else:
-            self.print_log('No dataset!')
-            exit(0)
-        print(f"{train_dataset = }")
-
-        self.train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_dataset)
+            self.train_sampler = None
+            shuffle = True # Shuffle for non-distributed training
+        
         self.train_loader = DataLoader(
             train_dataset,
-            batch_size=int(cfg.TRAIN_BATCH_SIZE / cfg.TRAIN_GPUS),
-            shuffle=False,
+            batch_size=int(cfg.TRAIN_BATCH_SIZE // cfg.TRAIN_GPUS), # Use // for integer division
+            shuffle=shuffle, 
             num_workers=cfg.DATA_WORKERS,
             pin_memory=True,
-            sampler=self.train_sampler,
+            sampler=self.train_sampler, 
             drop_last=True,
-            prefetch_factor=4,
+            prefetch_factor=getattr(cfg, 'DATA_PREFETCH_FACTOR', 4) 
         )
 
         self.print_log('Process dataset Done!')

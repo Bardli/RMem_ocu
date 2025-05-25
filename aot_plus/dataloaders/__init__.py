@@ -13,9 +13,10 @@ from .eval_datasets import (VOSTest, DAVIS_Test, YOUTUBEVOS_Test) # Corrected DA
 # from . import image_transforms
 # from . import video_transforms
 
-def build_train_dataloader(cfg):
+def build_train_dataset(cfg, transforms=None): # Renamed and added transforms argument
     """
-    Builds the training dataloader based on the configuration.
+    Builds the training dataset based on the configuration.
+    Returns a torch.utils.data.Dataset object.
     """
     datasets = []
     if not hasattr(cfg, 'DATASETS') or not cfg.DATASETS:
@@ -24,11 +25,8 @@ def build_train_dataloader(cfg):
     if not hasattr(cfg, 'DATASET_CONFIGS') or not cfg.DATASET_CONFIGS:
         raise ValueError("cfg.DATASET_CONFIGS must be defined and not empty.")
 
-    # TODO: Implement transforms pipeline based on cfg
-    # For now, transform is None. In a real scenario, this would be built
-    # using cfg.DATA_RANDOMCROP, cfg.DATA_RANDOMFLIP, etc.
-    # and specific transform classes from image_transforms or video_transforms.
-    transform = None 
+    # The 'transforms' argument is now passed in from the caller (Trainer.prepare_dataset)
+    # transform = None # This line is removed
 
     for dataset_name in cfg.DATASETS:
         if dataset_name not in cfg.DATASET_CONFIGS:
@@ -44,7 +42,7 @@ def build_train_dataloader(cfg):
             # Map config values to ExtractedFramesTrain constructor arguments
             # Constructor: transform=None, rgb=True, repeat_time=1, seq_len=1, max_obj_n=10, ignore_thresh=1.0
             ds = ExtractedFramesTrain(
-                transform=transform, # This should be a composed transform object
+                transform=transforms, # Use the passed-in transforms
                 rgb=train_config.get("RGB", True),
                 repeat_time=common_config.get("REPEAT_TIME", 1),
                 seq_len=common_config.get("SEQ_LEN", 1),
@@ -57,12 +55,16 @@ def build_train_dataloader(cfg):
             # This needs root and output_size from common_config or global cfg
             ds = StaticTrain(
                 root=cfg.DIR_STATIC, # Assuming global DIR_STATIC from cfg
-                output_size=common_config.get("OUTPUT_SIZE", cfg.DATA_RANDOMCROP),
+                output_size=common_config.get("OUTPUT_SIZE", cfg.DATA_RANDOMCROP), # output_size is specific to StaticTrain's needs
                 seq_len=common_config.get("SEQ_LEN", 5),
                 max_obj_n=common_config.get("MAX_OBJ_NUM", 10),
                 # dynamic_merge and merge_prob could come from train_config or common_config
                 dynamic_merge=train_config.get("DYNAMIC_MERGE", common_config.get("DYNAMIC_MERGE", True)),
                 merge_prob=train_config.get("MERGE_PROB", 1.0)
+                # Note: StaticTrain itself applies transforms internally, so passing `transforms` here might be redundant
+                # or require StaticTrain to be adapted. For now, we assume StaticTrain handles its own transforms
+                # or the passed `transforms` is compatible / None for it.
+                # If StaticTrain is meant to use the global `transforms`, its constructor/logic might need adjustment.
             )
             datasets.append(ds)
         elif dataset_type == "YOUTUBEVOS_Train":
@@ -72,7 +74,7 @@ def build_train_dataloader(cfg):
             ds = YOUTUBEVOS_Train(
                 root=cfg.DIR_YTB, # Assuming global DIR_YTB
                 year=train_config.get("YEAR", 2019), # Example: could be in train_config
-                transform=transform,
+                transform=transforms, # Use the passed-in transforms
                 rgb=train_config.get("RGB", True),
                 rand_gap=train_config.get("RAND_GAP", cfg.DATA_RANDOM_GAP_YTB),
                 seq_len=common_config.get("SEQ_LEN", 3),
@@ -99,22 +101,7 @@ def build_train_dataloader(cfg):
     # If only one dataset, use it directly.
     final_dataset = datasets[0] if len(datasets) == 1 else torch.utils.data.ConcatDataset(datasets)
     
-    # Common DataLoader parameters
-    # These should ideally come from cfg (e.g., cfg.TRAIN_BATCH_SIZE, cfg.DATA_WORKERS)
-    batch_size = getattr(cfg, "TRAIN_BATCH_SIZE", 1) 
-    num_workers = getattr(cfg, "DATA_WORKERS", 0)
-    shuffle = True # Typically true for training
-
-    train_loader = DataLoader(
-        final_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True, # Common optimization
-        drop_last=True # Usually true for training
-    )
-    
-    return train_loader
+    return final_dataset # Return the dataset object, not the DataLoader
 
 def build_eval_dataloader(cfg, dataset_name, split='val'):
     """
@@ -143,7 +130,7 @@ def build_eval_dataloader(cfg, dataset_name, split='val'):
     dataset = None
     if dataset_type == "ExtractedFramesTrain": # Using the train class for eval
         dataset = ExtractedFramesTrain(
-            transform=eval_transform,
+            transform=eval_transform, # Use the passed-in eval_transform
             rgb=common_config.get("RGB", True), # from common config
             seq_len=1, # Override for eval: typically process single frames
             max_obj_n=common_config.get("MAX_OBJ_NUM", 10), # from common config
