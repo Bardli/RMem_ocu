@@ -7,8 +7,7 @@ from torch.utils.data import DataLoader
 from .train_datasets import (ExtractedFramesTrain, StaticTrain, VOSTrain,
                              DAVIS2017_Train, YOUTUBEVOS_Train, TEST,
                              VOST_Train, VISOR_Train)
-from .eval_datasets import (VOSTest, DAVIS2017_Test, YOUTUBEVOS_Test,
-                            VisorTest)
+from .eval_datasets import (VOSTest, DAVIS_Test, YOUTUBEVOS_Test) # Corrected DAVIS2017_Test to DAVIS_Test, removed VisorTest
 
 # It's common to have transform modules.
 # from . import image_transforms
@@ -119,38 +118,77 @@ def build_train_dataloader(cfg):
 
 def build_eval_dataloader(cfg, dataset_name, split='val'):
     """
-    Builds an evaluation dataloader.
-    Dataset specific configurations should be handled.
+    Builds an evaluation dataloader based on the configuration.
     """
-    if not hasattr(cfg, 'DATASET_CONFIGS') or dataset_name not in cfg.DATASET_CONFIGS:
-        # Fallback or error if specific config not found
-        print(f"Warning: No specific config for {dataset_name} in DATASET_CONFIGS for eval. Using global settings.")
-        # This part needs more robust handling for eval datasets.
-        # For example, VOSTest might take root, split, etc.
-        # eval_transform = ... (usually simpler than train_transform)
-        eval_transform = None 
-        
-        if dataset_name == 'VOSTest': # Example
-            ds = VOSTest(root=cfg.DIR_VOST, transform=eval_transform, split=split)
-        elif dataset_name == 'DAVIS2017_Test':
-            ds = DAVIS2017_Test(root=cfg.DIR_DAVIS, transform=eval_transform, split=split, year=2017)
-        # Add other eval dataset types
-        else:
-            raise NotImplementedError(f"Evaluation for dataset {dataset_name} not implemented.")
-        
-        eval_loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=getattr(cfg, "TEST_WORKERS", 0))
-        return eval_loader
+    # cfg.DATASETS might not be the primary list for eval, dataset_name is passed directly.
+    # However, DATASET_CONFIGS is essential.
+    if not hasattr(cfg, 'DATASET_CONFIGS') or not cfg.DATASET_CONFIGS:
+        raise ValueError("cfg.DATASET_CONFIGS must be defined and not empty for build_eval_dataloader.")
 
-    # Preferred path: Using DATASET_CONFIGS if available for eval datasets too
+    if dataset_name not in cfg.DATASET_CONFIGS:
+        raise ValueError(f"Configuration for dataset '{dataset_name}' not found in cfg.DATASET_CONFIGS for eval.")
+
+    # Define eval_transform, potentially from cfg or a default simple transform for eval
+    # Placeholder: build this from cfg if needed (e.g., ToTensor, Normalize)
+    # This would be similar to how transforms are handled in build_train_dataloader,
+    # but typically without data augmentation.
+    eval_transform = None 
+
     dataset_config_entry = cfg.DATASET_CONFIGS[dataset_name]
-    dataset_type = dataset_config_entry.get("TYPE") # e.g. "VOSTest"
-    # ... (similar logic to build_train_dataloader for instantiating eval datasets) ...
-    
-    # Placeholder for now, proper implementation would mirror train but for eval types.
-    print(f"Building eval dataloader for {dataset_name} type {dataset_type} (not fully implemented via DATASET_CONFIGS yet).")
-    # Fallback to the simpler implementation above for now.
-    return build_eval_dataloader(cfg, dataset_name, split) # Recursive call to the simpler logic for now.
+    dataset_type = dataset_config_entry.get("TYPE")
+    specific_config = dataset_config_entry.get("CONFIG", {})
+    common_config = specific_config.get("COMMON", {})
+    # eval_config = specific_config.get("EVAL", {}) # Optional: if "EVAL" specific params exist
 
+    dataset = None
+    if dataset_type == "ExtractedFramesTrain": # Using the train class for eval
+        dataset = ExtractedFramesTrain(
+            transform=eval_transform,
+            rgb=common_config.get("RGB", True), # from common config
+            seq_len=1, # Override for eval: typically process single frames
+            max_obj_n=common_config.get("MAX_OBJ_NUM", 10), # from common config
+            # repeat_time is not relevant for eval
+            # ignore_thresh might be relevant if eval script handles it, otherwise default
+            ignore_thresh=common_config.get("IGNORE_THRESH", 0.0) # Using common_config for consistency
+        )
+    elif dataset_type == "VOSTest":
+        # VOSTest is more complex as it's usually instantiated per sequence by the eval script.
+        # The eval script (e.g., tools/eval.py) would need to provide sequence-specific info.
+        # This function might only return the class and its fixed params, or need more context.
+        # For now, this is a placeholder for how it *could* be structured if called directly with global cfg.
+        print(f"Warning: Instantiation for {dataset_type} in build_eval_dataloader is complex and typically handled per-sequence by an evaluation script.")
+        # Example (highly simplified, likely incorrect for direct use without eval script logic):
+        # dataset = VOSTest(
+        #     image_root=common_config.get("DATA_IMG_DIR", cfg.DIR_VOST),
+        #     label_root=common_config.get("DATA_ANNO_DIR", cfg.DIR_VOST), # Annotations might be different for eval
+        #     transform=eval_transform,
+        #     rgb=common_config.get("RGB", True),
+        #     # Other VOSTest specific parameters like 'seq_name', 'images', 'labels'
+        #     # would need to be passed or handled by the calling evaluation script.
+        # )
+        raise NotImplementedError(f"Full instantiation for {dataset_type} within build_eval_dataloader is complex. Evaluation scripts usually handle per-sequence setup.")
+    elif dataset_type == "DAVIS_Test": # Corrected name
+        print(f"Warning: Instantiation for {dataset_type} in build_eval_dataloader is complex.")
+        raise NotImplementedError(f"Full instantiation for {dataset_type} within build_eval_dataloader is complex. Evaluation scripts usually handle per-sequence setup.")
+    elif dataset_type == "YOUTUBEVOS_Test":
+        print(f"Warning: Instantiation for {dataset_type} in build_eval_dataloader is complex.")
+        raise NotImplementedError(f"Full instantiation for {dataset_type} within build_eval_dataloader is complex. Evaluation scripts usually handle per-sequence setup.")
+    # Add other evaluation dataset types as needed
+    else:
+        raise NotImplementedError(f"Evaluation for dataset type '{dataset_type}' (from dataset '{dataset_name}') not implemented in build_eval_dataloader.")
+
+    if dataset is None: # Should be caught by NotImplementedError or successful instantiation
+        raise ValueError(f"Failed to create dataset for '{dataset_name}' with type '{dataset_type}'. This should not happen.")
+
+    eval_loader = DataLoader(
+        dataset,
+        batch_size=getattr(cfg, "TEST_BATCH_SIZE", 1), 
+        shuffle=False, # Never shuffle for evaluation
+        num_workers=getattr(cfg, "TEST_WORKERS", getattr(cfg, "DATA_WORKERS", 0)), # Use TEST_WORKERS or fallback
+        pin_memory=True,
+        drop_last=False
+    )
+    return eval_loader
 
 # Example of how transforms could be built (conceptual)
 # def build_transforms(cfg, is_train=True):
