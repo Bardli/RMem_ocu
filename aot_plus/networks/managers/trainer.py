@@ -40,7 +40,8 @@ class Trainer(object):
         self.print_log(json.dumps(cfg.__dict__, indent=4, sort_keys=True))
 
         print("Use GPU {} for training VOS.".format(self.gpu))
-        torch.cuda.set_device(self.gpu)
+        if torch.cuda.is_available() and self.gpu != -1: # Check for CUDA and valid GPU ID
+            torch.cuda.set_device(self.gpu)
         torch.backends.cudnn.benchmark = True if \
             cfg.DATA_RANDOMCROP[0] == cfg.DATA_RANDOMCROP[1] \
             and 'swin' not in cfg.MODEL_ENCODER \
@@ -48,7 +49,9 @@ class Trainer(object):
 
         self.print_log('Build VOS model.')
 
-        self.model = build_vos_model(cfg.MODEL_VOS, cfg).cuda(self.gpu)
+        self.model = build_vos_model(cfg.MODEL_VOS, cfg)
+        if torch.cuda.is_available() and self.gpu != -1: # Check for CUDA and valid GPU ID
+            self.model = self.model.cuda(self.gpu)
         print(f"Build model {type(self.model).__name__} completed")
         self.model_encoder = self.model.encoder
         self.engine = build_engine(

@@ -2,7 +2,7 @@ import os
 import importlib
 
 
-class DefaultEngineConfig():
+class EngineConfig(): # Renamed from DefaultEngineConfig
     def __init__(self, exp_name='default', model='AOTT'):
         model_cfg = importlib.import_module('configs.models.' +
                                             model).ModelConfig()
