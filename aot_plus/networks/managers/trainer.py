@@ -450,7 +450,8 @@ class Trainer(object):
         model.train()
         while step < cfg.TRAIN_TOTAL_STEPS:
             print(f"{step = }")
-            train_sampler.set_epoch(epoch)
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
             epoch += 1
             print(f"{epoch = }")
             last_time = time.time()
