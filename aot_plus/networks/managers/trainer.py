@@ -13,7 +13,7 @@ from torchvision import transforms
 import torch.utils.data.distributed # For DistributedSampler
 torch.set_printoptions(linewidth=328)
 
-from ..dataloaders import build_train_dataset 
+from dataloaders import build_train_dataset 
 import dataloaders.video_transforms as tr 
 
 from utils.meters import AverageMeter

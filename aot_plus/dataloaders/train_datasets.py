@@ -876,8 +876,8 @@ class ExtractedFramesTrain(VOSTrain):
                  max_obj_n=10,
                  ignore_thresh=1.0):
 
-        image_root = './extracted_frames/'
-        label_root = './extracted_frames/' # JSON files are here
+        image_root = '../extracted_frames/'
+        label_root = '../extracted_frames/' # JSON files are here
 
         imglistdic = {}
         # Scan for .jpg files

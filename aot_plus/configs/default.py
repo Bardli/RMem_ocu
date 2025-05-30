@@ -46,8 +46,8 @@ class DefaultEngineConfig():
                 "TYPE": "ExtractedFramesTrain",
                 "CONFIG": {
                     "COMMON": {
-                        "DATA_ANNO_DIR": "./extracted_frames/",
-                        "DATA_IMG_DIR": "./extracted_frames/",
+                        "DATA_ANNO_DIR": "extracted_frames",
+                        "DATA_IMG_DIR": "extracted_frames",
                         "SEQ_LEN": 1,
                         "MAX_OBJ_NUM": 10,
                         "OUTPUT_SIZE": (465, 465),

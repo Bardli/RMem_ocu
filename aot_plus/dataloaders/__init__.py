@@ -42,6 +42,7 @@ def build_train_dataset(cfg, transforms=None): # Renamed and added transforms ar
             # Map config values to ExtractedFramesTrain constructor arguments
             # Constructor: transform=None, rgb=True, repeat_time=1, seq_len=1, max_obj_n=10, ignore_thresh=1.0
             ds = ExtractedFramesTrain(
+                # root=common_config.get("DATA_IMG_DIR", cfg.DIR_EXTRACTED_FRAMES), # Assuming DIR_EXTRACTED_FRAMES is defined in cfg
                 transform=transforms, # Use the passed-in transforms
                 rgb=train_config.get("RGB", True),
                 repeat_time=common_config.get("REPEAT_TIME", 1),
