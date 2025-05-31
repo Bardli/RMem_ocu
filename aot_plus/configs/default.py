@@ -48,7 +48,7 @@ class EngineConfig(): # Renamed from DefaultEngineConfig
                     "COMMON": {
                         "DATA_ANNO_DIR": "extracted_frames",
                         "DATA_IMG_DIR": "extracted_frames",
-                        "SEQ_LEN": 1,
+                        "SEQ_LEN": 5,
                         "MAX_OBJ_NUM": 10,
                         "OUTPUT_SIZE": (465, 465),
                         "ENABLE_PREV_FRAME": False,
