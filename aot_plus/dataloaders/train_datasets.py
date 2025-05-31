@@ -869,176 +869,225 @@ def polygon_to_mask(shapes, height, width):
 
 class ExtractedFramesTrain(VOSTrain):
     def __init__(self,
+                 image_root='extracted_frames/', # Default path
+                 label_root='extracted_frames/', # Default path for JSONs
                  transform=None,
                  rgb=True,
                  repeat_time=1,
-                 seq_len=1,  # Effectively 1 for single images
+                 seq_len=5, # Default sequence length
                  max_obj_n=10,
-                 ignore_thresh=1.0):
+                 # These are from VOSTrain, pass them along or set sensible defaults
+                 rand_gap=1, # Set to 1 for mostly contiguous sequences from found files
+                 rand_reverse=False, # Usually False for extracted video frames
+                 dynamic_merge=False, # Disable merging for this loader
+                 enable_prev_frame=False, # Our logic handles this directly
+                 merge_prob=0.0,
+                 ignore_thresh=1.0
+                 ):
 
-        image_root = 'extracted_frames/'
-        label_root = 'extracted_frames/' # JSON files are here
-
-        imglistdic = {}
-        # Scan for .jpg files
-        for root_dir, _, files in os.walk(image_root):
-            for file in files:
-                if file.endswith('.jpg'):
-                    img_path = os.path.join(root_dir, file)
-                    json_path = os.path.join(root_dir, file.replace('.jpg', '.json'))
-                    if os.path.exists(json_path):
-                        seq_name = file[:-4] # Filename without extension
-                        # For VOSTrain compatibility, imagelist and lablist are lists
-                        imglistdic[seq_name] = ([file], [file.replace('.jpg', '.json')])
-                    else:
-                        print(f"Warning: JSON file for {img_path} not found. Skipping.")
-        
-        if not imglistdic:
-            print("Warning: No image-JSON pairs found in ./extracted_frames/. ExtractedFramesTrain will be empty.")
-
-        # Call VOSTrain's init. Note that some parameters might not be fully utilized
-        # due to the single-frame nature of this dataset.
+        # Initialize basic attributes from VOSTrain that we might not heavily use but superclass expects
+        # We are largely bypassing VOSTrain's list-based indexing for our file-based one.
+        # So, imglistdic passed to super can be minimal.
+        # The critical part is that self.transform is set.
         super(ExtractedFramesTrain, self).__init__(
             image_root=image_root,
             label_root=label_root,
-            imglistdic=imglistdic,
+            imglistdic={}, # Pass empty, as we manage file lists directly
             transform=transform,
             rgb=rgb,
             repeat_time=repeat_time,
-            rand_gap=1, # Not relevant for single frames
-            seq_len=seq_len, # Will be 1
-            rand_reverse=False, # Not relevant
-            dynamic_merge=False, # No merging for single images initially
-            enable_prev_frame=False, # No prev frame
-            merge_prob=0,
+            rand_gap=rand_gap,
+            seq_len=seq_len, # Pass our seq_len
+            rand_reverse=rand_reverse,
+            dynamic_merge=dynamic_merge,
+            enable_prev_frame=enable_prev_frame,
+            merge_prob=merge_prob,
             max_obj_n=max_obj_n,
             ignore_thresh=ignore_thresh
         )
-        print(f'ExtractedFramesTrain: {len(self.seqs)} images loaded.')
 
-    def get_image_label(self, seqname, imagelist, lablist, index, is_ref=False):
-        # In this class, imagelist and lablist will each contain one file.
-        # index will always be 0.
-        img_filename = imagelist[0]
-        json_filename = lablist[0]
+        self.image_root = image_root
+        self.label_root = label_root # Where JSONs are, typically same as image_root
+        self.seq_len = seq_len
+        self.rgb = rgb
+        self.transform = transform
+        self.max_obj_n = max_obj_n
+        self.repeat_time = repeat_time # For __len__
 
-        img_path = os.path.join(self.image_root, seqname, img_filename) # seqname is the subfolder if any
-        json_path = os.path.join(self.label_root, seqname, json_filename)
+        self.all_image_files = []
+        self.img_to_json_map = {}
 
-        if not os.path.exists(img_path): # Correction: image_root already contains seqname if it's a subfolder
-            img_path = os.path.join(self.image_root, img_filename)
-            json_path = os.path.join(self.label_root, json_filename)
+        # Scan for .jpg files and their .json counterparts
+        if not os.path.isdir(self.image_root):
+            print(f"Warning: Image root directory {self.image_root} does not exist.")
+            self.valid_sequence_start_indices = []
+            return
+
+        for dirpath, _, filenames in os.walk(self.image_root):
+            for filename in sorted(filenames): # Sort to maintain order
+                if filename.lower().endswith('.jpg'):
+                    img_full_path = os.path.join(dirpath, filename)
+                    json_filename = os.path.splitext(filename)[0] + '.json'
+                    json_full_path = os.path.join(dirpath, json_filename)
+
+                    if os.path.exists(json_full_path):
+                        self.all_image_files.append(img_full_path)
+                        self.img_to_json_map[img_full_path] = json_full_path
+                    # else:
+                        # print(f"Debug: JSON file for {img_full_path} not found. Skipping.")
+
+        # self.all_image_files should already be sorted if filenames from os.walk were sorted
+        # and processed in that order for a single directory. If multiple subdirs, this sort is important.
+        # For simplicity, current os.walk processes directory by directory. If frames from one sequence
+        # are in one directory, sorting filenames is enough. If they are spread, more complex logic needed.
+        # Assuming frames for a sequence are in the same directory and sorted filenames are enough.
+        # self.all_image_files.sort() # Ensure overall sort if multiple subdirs were walked out of order
+
+        self.valid_sequence_start_indices = []
+        if self.seq_len > 0 and len(self.all_image_files) >= self.seq_len:
+            for i in range(len(self.all_image_files) - self.seq_len + 1):
+                # Basic check: are files from the same directory? (implies same sequence)
+                # This check assumes a flat directory structure for frames of a single video,
+                # or that self.all_image_files correctly groups by sequence.
+                # For now, we assume all_image_files are globally sorted, and any slice of seq_len is a candidate.
+                # A more robust check would ensure all files in a candidate sequence belong to the same video
+                # (e.g. share the same parent directory if image_root has subdirs per video)
+                # For this refactor, we assume files are sorted and any segment is fine.
+                # This might need refinement if dataset has multiple unrelated sequences mixed.
+                # Let's assume for now that all_image_files contains frames from ONE sequence or
+                # that the sorting naturally groups them correctly for slicing.
+
+                # Example check (can be enhanced):
+                # first_frame_dir = os.path.dirname(self.all_image_files[i])
+                # last_frame_dir = os.path.dirname(self.all_image_files[i + self.seq_len - 1])
+                # if first_frame_dir == last_frame_dir:
+                #    self.valid_sequence_start_indices.append(i)
+                # else:
+                #    print(f"Debug: Sequence starting at {self.all_image_files[i]} spans directories. Not adding.")
+                self.valid_sequence_start_indices.append(i) # Simplified: any slice is a candidate
 
 
-        image = cv2.imread(img_path)
-        if image is None:
-            raise FileNotFoundError(f"Image not found: {img_path}")
-        image = np.array(image, dtype=np.float32)
+        if not self.valid_sequence_start_indices:
+            print(f"Warning: No valid sequences of length {self.seq_len} could be formed from {len(self.all_image_files)} images.")
 
-        if self.rgb:
-            image = image[:, :, [2, 1, 0]] # BGR to RGB
+        print(f'ExtractedFramesTrain: {len(self.all_image_files)} images found. {len(self.valid_sequence_start_indices)} potential sequences of length {self.seq_len}. Repeat time: {self.repeat_time}.')
 
-        label = None
-        if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                try:
-                    annot_data = json.load(f)
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON: {json_path} - {e}")
-                    # Return a dummy label or raise error
-                    height, width, _ = image.shape
-                    label = np.zeros((height,width), dtype=np.uint8) # dummy label
-                    return image, label
+    def __len__(self):
+        return len(self.valid_sequence_start_indices) * self.repeat_time
+
+    def sample_sequence(self, idx, dense_seq=None): # dense_seq might not be used here
+        if not self.valid_sequence_start_indices:
+            raise IndexError("No valid sequences available in ExtractedFramesTrain.")
+
+        actual_start_file_idx = self.valid_sequence_start_indices[idx % len(self.valid_sequence_start_indices)]
+
+        loaded_images = []
+        loaded_labels = []
+        frame_meta_names = []
+
+        # Determine sequence name (e.g., parent directory of the first frame)
+        # This assumes image_root might contain subdirectories for different sequences.
+        # If image_root is flat, then seq_name might just be image_root or a fixed string.
+        first_frame_path = self.all_image_files[actual_start_file_idx]
+        seq_name_candidate = os.path.basename(os.path.dirname(first_frame_path))
+        if seq_name_candidate == os.path.basename(self.image_root.rstrip('/\\')): # if parent is image_root itself
+             seq_name_candidate = os.path.basename(self.image_root) # use name of image_root
+
+        meta_seq_name = seq_name_candidate if seq_name_candidate else "default_sequence"
 
 
-            # Try to get imagePath, then fall back to image_filename
-            # json_image_path_in_annot = annot_data.get('imagePath', img_filename)
+        for i in range(self.seq_len):
+            frame_path = self.all_image_files[actual_start_file_idx + i]
+            json_path = self.img_to_json_map[frame_path]
 
+            image = cv2.imread(frame_path)
+            if image is None:
+                raise FileNotFoundError(f"Image not found during sequence sampling: {frame_path}")
+            image = np.array(image, dtype=np.float32)
 
-            # Assuming image height and width are available in JSON or from the loaded image
-            height = annot_data.get('imageHeight')
-            width = annot_data.get('imageWidth')
-            if height is None or width is None:
-                height, width, _ = image.shape # Use actual image dimensions
+            if self.rgb:
+                image = image[:, :, [2, 1, 0]] # BGR to RGB
 
-            shapes = annot_data.get('shapes', [])
-            if not shapes:
-                 #print(f"Warning: No shapes found in {json_path}. Creating an empty mask.")
-                 label = np.zeros((height, width), dtype=np.uint8)
-            else:
-                label = polygon_to_mask(shapes, height, width)
-        else:
-            #print(f"Warning: JSON file {json_path} not found. Returning empty mask.")
             height, width, _ = image.shape
-            label = np.zeros((height, width), dtype=np.uint8) # Empty mask
+            label = np.zeros((height, width), dtype=np.uint8) # Default empty mask
 
-        return image, label
+            if os.path.exists(json_path):
+                with open(json_path, 'r') as f:
+                    try:
+                        annot_data = json.load(f)
+                        shapes = annot_data.get('shapes', [])
+                        json_height = annot_data.get('imageHeight', height) # Use image's height if not in json
+                        json_width = annot_data.get('imageWidth', width)   # Use image's width if not in json
+                        if shapes:
+                            label = polygon_to_mask(shapes, json_height, json_width)
+                        # else: print(f"Debug: No shapes in {json_path}")
+                    except json.JSONDecodeError as e:
+                        print(f"Error decoding JSON {json_path}: {e}. Using empty mask.")
+            # else: print(f"Debug: JSON {json_path} not found. Using empty mask.")
 
-    def sample_sequence(self, idx, dense_seq=None):
-        idx = idx % len(self.seqs)
-        seqname = self.seqs[idx]
-        # imagelist and lablist each contain one file for this dataset
-        imagelist, lablist = self.imglistdic[seqname] 
+            loaded_images.append(image)
+            loaded_labels.append(label)
+            frame_meta_names.append(os.path.basename(frame_path))
 
-        # Since it's a single image, ref, prev, and curr are all the same.
-        # index is 0 as there's only one image/label in the lists.
-        image, label = self.get_image_label(seqname, imagelist, lablist, 0, is_ref=True)
+        if self.seq_len <= 0:
+            raise ValueError("Sequence length must be at least 1.")
+        # Based on problem description:
+        # ref_img = loaded_images[0]
+        # prev_img = loaded_images[1] (if seq_len >= 2, else copy of ref_img for seq_len==1)
+        # curr_img = loaded_images[2:] (empty if seq_len < 3)
 
-        if label is None: # Should not happen if get_image_label handles missing JSONs
-            h, w, _ = image.shape
-            label = np.zeros((h,w), dtype=np.uint8)
+        ref_img = loaded_images[0]
+        ref_label = loaded_labels[0]
 
+        if self.seq_len == 1:
+            prev_img = loaded_images[0] # Copy of ref
+            prev_label = loaded_labels[0] # Copy of ref
+            curr_img_list = []
+            curr_label_list = []
+        else: # seq_len >= 2
+            prev_img = loaded_images[1]
+            prev_label = loaded_labels[1]
+            if self.seq_len == 2:
+                curr_img_list = []
+                curr_label_list = []
+            else: # seq_len > 2
+                curr_img_list = loaded_images[2:]
+                curr_label_list = loaded_labels[2:]
 
-        obj_ids = list(np.unique(label))
+        # Determine object number from the reference frame's mask
+        obj_ids = list(np.unique(ref_label))
         obj_num = 0
-        if obj_ids: # Check if obj_ids is not empty
-            obj_num = max(obj_id for obj_id in obj_ids if obj_id != 0 and obj_id != 255) if any(obj_id != 0 and obj_id != 255 for obj_id in obj_ids) else 0
+        # Count unique values in the mask, excluding 0 (background) and 255 (ignore)
+        valid_obj_ids = [oid for oid in obj_ids if oid != 0 and oid != 255]
+        if valid_obj_ids:
+            # obj_num can be max id or count of ids, depending on how it's used.
+            # Using max ID is common if IDs are consecutive instance numbers.
+            obj_num = max(valid_obj_ids)
 
 
-        # For single image dataset, ref, prev, curr are the same.
-        # The VOSTrain expects a list for curr_img and curr_label.
         sample = {
-            'ref_img': image,
-            'prev_img': image, # Same as ref for single image
-            'curr_img': [image] * max(0, self.seq_len - 2), # Handle seq_len < 2
-            'ref_label': label,
-            'prev_label': label, # Same as ref
-            'curr_label': [label] * max(0, self.seq_len - 2)
+            'ref_img': ref_img,
+            'ref_label': ref_label,
+            'prev_img': prev_img,
+            'prev_label': prev_label,
+            'curr_img': curr_img_list,
+            'curr_label': curr_label_list
         }
         
-        # Adjust curr_img and curr_label if seq_len is 1 or 2
-        if self.seq_len == 1:
-            # ref_img and ref_label are primary. prev_img/label and curr_img/label might not be used.
-            # However, to maintain structure, let's ensure they are not empty lists if code expects items.
-            # _get_images and _get_labels expect prev_img and curr_img[0]
-            # So if seq_len is 1, these might cause issues if not handled by the caller.
-            # Let's ensure curr_img and curr_label are empty if seq_len is 1,
-            # and prev_img/label are copies of ref.
-            # The original StaticTrain sets prev_img = frames[1], curr_img = frames[2:]
-            # and for seq_len=1, this logic might need care.
-            # For simplicity here, we make prev_img and curr_img[0] copies of ref_img for seq_len >=1.
-            # If seq_len == 1, curr_img/label should be empty lists.
-            # If seq_len == 2, curr_img/label should be empty lists.
-            # The structure of _get_images is [ref, prev] + curr
-            # The structure of _get_labels is [ref, prev] + curr
-            # So if seq_len == 1 (meaning total one frame), then curr should be empty.
-            # If we set seq_len = 1 for ExtractedFramesTrain, then self.seq_len-2 = -1
-            # This means curr_img and curr_label will be empty lists by max(0, self.seq_len-2)
-            pass # Already handled by max(0, self.seq_len - 2)
-
         sample['meta'] = {
-            'seq_name': seqname,
-            'frame_num': 1, # Always 1 frame
+            'seq_name': meta_seq_name,
+            'frame_num': self.seq_len, # Total frames in this sampled sequence
             'obj_num': obj_num,
-            'dense_seq': True # Treat as dense as it's a single annotated frame
+            'dense_seq': True, # Assuming all frames in sequence are used
+            'frame_names': frame_meta_names
         }
 
         if self.transform is not None:
             sample = self.transform(sample)
 
         return sample
-    
-    # __getitem__ can be inherited if sample_sequence and dynamic_merge=False works.
-    # If dynamic_merge was true, merge_sample would need to be checked.
-    # For now, dynamic_merge is set to False in __init__.
-    # So, the parent's __getitem__ should work.
+
+    def __getitem__(self, idx):
+        # This directly calls sample_sequence, bypassing VOSTrain's __getitem__ logic
+        # which might involve dynamic merging or other complexities not needed here.
+        return self.sample_sequence(idx)
