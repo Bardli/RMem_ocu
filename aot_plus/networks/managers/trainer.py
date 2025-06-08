@@ -541,7 +541,7 @@ class Trainer(object):
                             step=step,
                             tf_board=tf_board,
                         )
-                        if cfg.DEBUG_FIX_RANDOM:
+                        if getattr(cfg, 'DEBUG_FIX_RANDOM', False):
                             print(f"[{self.rank}] : Loss {loss} | ")
                         loss = torch.mean(loss)
 
@@ -563,7 +563,7 @@ class Trainer(object):
                         step=step,
                         tf_board=tf_board,
                     )
-                    if cfg.DEBUG_FIX_RANDOM:
+                    if getattr(cfg, 'DEBUG_FIX_RANDOM', False):
                         print(f"Loss {loss} | ")
                     loss = torch.mean(loss)
 
