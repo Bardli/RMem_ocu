@@ -62,6 +62,10 @@ class Trainer(object):
             long_term_mem_gap=cfg.TRAIN_LONG_TERM_MEM_GAP,
         )
 
+        # Ensure engine is on the correct GPU
+        if torch.cuda.is_available() and self.gpu != -1:
+            self.engine = self.engine.cuda(self.gpu)
+
         if cfg.MODEL_FREEZE_BACKBONE:
             print(f"Freeze Model Encoder !")
             for param in self.model_encoder.parameters():
