@@ -333,7 +333,7 @@ class Trainer(object):
             num_workers=cfg.DATA_WORKERS,
             pin_memory=True,
             sampler=self.train_sampler, 
-            drop_last=True,
+            drop_last=False, # <<< Changed to False
             prefetch_factor=getattr(cfg, 'DATA_PREFETCH_FACTOR', 4) 
         )
 
