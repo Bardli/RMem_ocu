@@ -1006,5 +1006,101 @@ class ExtractedFramesTrain(VOSTrain):
 
         return image_np, label_np
 
+    def get_ref_index_v2(self,
+                         seqname, # Will be "" for this class
+                         lablist, # List of JSON filenames
+                         min_fg_pixels=200,
+                         max_try=40, # Default from VOSTrain
+                         total_gap=0, # Default from VOSTrain
+                         ignore_thresh=0.2): # Default from VOSTrain, but we use self.ignore_thresh
+
+        search_range = len(lablist) - total_gap
+        if search_range <= 1:
+            # If only one frame is available (or fewer), that must be the reference.
+            # Or if total_gap makes search_range too small.
+            return 0
+
+        bad_indices = []
+        # Initialize ref_index to 0; if loop doesn't find a better one, this will be returned.
+        # This ensures that if all frames are "bad" according to criteria,
+        # the first possible frame is chosen, which is VOSTrain's fallback.
+        ref_index = 0
+
+        for _ in range(max_try):
+            # Try to find a random index that hasn't been marked bad.
+            # If search_range is 0 (e.g. len(lablist)=0), np.random.randint will error.
+            # This case should be caught by search_range <=1 check earlier if lablist is empty.
+            if search_range == 0 : # Should not happen if search_range <=1 is handled.
+                 return 0
+
+            ref_index_candidate = np.random.randint(search_range)
+
+            if ref_index_candidate in bad_indices:
+                continue
+
+            json_filename = lablist[ref_index_candidate]
+            # self.label_root is self.actual_image_root, seqname is "" for this class
+            json_path = os.path.join(self.label_root, seqname, json_filename)
+
+            try:
+                with open(json_path, 'r') as f:
+                    annot_data = json.load(f)
+
+                shapes = annot_data.get('shapes', [])
+                height = annot_data.get('imageHeight')
+                width = annot_data.get('imageWidth')
+
+                if height is None or width is None:
+                    # Need to get image dimensions from the actual image file
+                    # self.imglistdic[seqname] is a tuple (jpg_list, json_list)
+                    # The first element of the tuple [0] is the jpg_list
+                    img_filename = self.imglistdic[seqname][0][ref_index_candidate]
+                    img_path = os.path.join(self.image_root, seqname, img_filename)
+
+                    if not os.path.exists(img_path):
+                        # print(f"ExtractedFramesTrain DEBUG: Image file {img_path} not found for dimension check. Skipping ref_index {ref_index_candidate}")
+                        bad_indices.append(ref_index_candidate)
+                        continue
+
+                    img_for_dim = cv2.imread(img_path)
+                    if img_for_dim is None:
+                        # print(f"ExtractedFramesTrain DEBUG: Failed to load image {img_path} for dimension check. Skipping ref_index {ref_index_candidate}")
+                        bad_indices.append(ref_index_candidate)
+                        continue
+                    height, width, _ = img_for_dim.shape
+
+                if not shapes:
+                    # print(f"ExtractedFramesTrain DEBUG: No shapes in {json_path} for ref_index {ref_index_candidate}. Skipping.")
+                    bad_indices.append(ref_index_candidate)
+                    continue
+
+                ref_label_mask = polygon_to_mask(shapes, height, width)
+
+                num_ignore_pixels = np.sum(ref_label_mask == 255)
+                num_obj_pixels = np.sum((ref_label_mask > 0) & (ref_label_mask != 255))
+
+                # Using self.ignore_thresh (instance variable) set during __init__
+                if num_obj_pixels > min_fg_pixels and \
+                   (num_ignore_pixels / (num_obj_pixels + 1e-6)) <= self.ignore_thresh:
+                    ref_index = ref_index_candidate # Found a good index
+                    break # Exit loop, ref_index is set
+                else:
+                    bad_indices.append(ref_index_candidate)
+
+            except FileNotFoundError:
+                # print(f"ExtractedFramesTrain DEBUG: JSON file not found {json_path} for ref_index {ref_index_candidate}. Skipping.")
+                bad_indices.append(ref_index_candidate)
+                continue
+            except json.JSONDecodeError:
+                # print(f"ExtractedFramesTrain DEBUG: JSON decode error for {json_path} for ref_index {ref_index_candidate}. Skipping.")
+                bad_indices.append(ref_index_candidate)
+                continue
+            except Exception as e:
+                # print(f"ExtractedFramesTrain DEBUG: Error processing ref_index {ref_index_candidate} ({json_path}): {e}. Skipping.")
+                bad_indices.append(ref_index_candidate)
+                continue
+
+        return ref_index
+
 # Note: __len__ and __getitem__ are inherited from VOSTrain.
 # VOSTrain.sample_sequence will call our overridden get_image_label.
