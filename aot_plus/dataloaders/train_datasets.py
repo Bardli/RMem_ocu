@@ -925,9 +925,9 @@ class ExtractedFramesTrain(VOSTrain):
                     # else:
                         # print(f"Debug: JSON for {filename} not found in {self.actual_image_root}")
 
-        placeholder_seq_name = "_extracted_sequence_"
+        imglistdic_seq_name = "" # Use empty string for seqname
         if jpg_filenames:
-            imglistdic[placeholder_seq_name] = (jpg_filenames, json_filenames)
+            imglistdic[imglistdic_seq_name] = (jpg_filenames, json_filenames)
             print(f"ExtractedFramesTrain: Found {len(jpg_filenames)} image-JSON pairs in {self.actual_image_root}.")
         else:
             print(f"Warning: No valid image-JSON pairs found in {self.actual_image_root}. ExtractedFramesTrain will be empty or rely on superclass behavior if imglistdic is empty.")
