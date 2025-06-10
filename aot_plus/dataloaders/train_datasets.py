@@ -887,220 +887,195 @@ def polygon_to_mask(shapes, height, width):
     return mask
 
 
-# Ensure these imports are present at the top of the file
-# import os
-# import json
-# import cv2
-# import numpy as np
-# from .train_datasets import VOSTrain # Assuming VOSTrain is in the same file or accessible
-# from . import image_transforms as IT # If transforms are used
-# from ..utils.image import полігон_to_mask # Make sure this path is correct
+import os
+import json
+import cv2
+import numpy as np
+import torch
+from torch.utils.data import Dataset # Ensure this is the direct parent
 
-class ExtractedFramesTrain(VOSTrain):
+# polygon_to_mask should be defined globally in the file, e.g.:
+# def polygon_to_mask(shapes, height, width):
+#     mask = np.zeros((height, width), dtype=np.uint8)
+#     for i, shape in enumerate(shapes):
+#         points = np.array(shape['points'], dtype=np.int32)
+#         cv2.fillPoly(mask, [points], color=(i + 1)) # Object IDs start from 1
+#     return mask
+
+class ExtractedFramesTrain(Dataset):
     def __init__(self,
-                 image_root="extracted_frames/",  # This will be the actual directory path
+                 image_root="extracted_frames/",
                  transform=None,
                  rgb=True,
                  seq_len=5,
-                 max_obj_n=10,
+                 max_obj_n=10, # Kept for signature compatibility
                  repeat_time=1,
-                 ignore_thresh=1.0):
+                 ignore_thresh=1.0): # Kept for signature compatibility
 
-        self.actual_image_root = image_root # Store the original path
+        super(ExtractedFramesTrain, self).__init__()
 
-        imglistdic = {}
-        jpg_filenames = []
-        json_filenames = []
+        self.image_root = image_root
+        self.transform = transform
+        self.rgb = rgb
+        self.seq_len = seq_len
+        self.repeat_time = repeat_time
 
-        if not os.path.isdir(self.actual_image_root):
-            print(f"Warning: Image root directory {self.actual_image_root} does not exist for ExtractedFramesTrain.")
+        # Store these for compatibility, though not actively used in this simplified loader's core logic
+        self.max_obj_n = max_obj_n
+        self.ignore_thresh = ignore_thresh
+
+        if self.seq_len < 1:
+            raise ValueError("ExtractedFramesTrain: seq_len must be at least 1.")
+        # The structure ref/prev/curr implies seq_len >= 2 for prev, and seq_len >= 3 for curr[0]
+        # This warning can be adjusted based on how Trainer uses the sample.
+        if self.seq_len < 2 : # Strictly, prev_img might not be valid if seq_len is 1
+             print(f"Warning: ExtractedFramesTrain initialized with seq_len={self.seq_len}. "
+                   f"The sample structure might not fully populate 'prev_img' or 'curr_img'.")
+
+        self.all_image_files = []
+        self.img_to_json_map = {}
+        self.valid_sequence_start_indices = []
+
+        print(f"ExtractedFramesTrain: Scanning for images in: {os.path.abspath(self.image_root)}")
+
+        candidate_image_files = []
+        if not os.path.isdir(self.image_root):
+            print(f"Warning: ExtractedFramesTrain - Image root directory {self.image_root} does not exist.")
         else:
-            all_files = sorted(os.listdir(self.actual_image_root))
-            for filename in all_files:
-                if filename.lower().endswith('.jpg'):
-                    json_filename = os.path.splitext(filename)[0] + '.json'
-                    if json_filename in all_files: # Check if corresponding JSON exists
-                        jpg_filenames.append(filename)
-                        json_filenames.append(json_filename)
-                    # else:
-                        # print(f"Debug: JSON for {filename} not found in {self.actual_image_root}")
+            for dirpath, _, filenames in os.walk(self.image_root):
+                for filename in sorted(filenames): # Process in sorted order
+                    if filename.lower().endswith('.jpg'):
+                        candidate_image_files.append(os.path.join(dirpath, filename))
 
-        imglistdic_seq_name = "" # Use empty string for seqname
-        if jpg_filenames:
-            imglistdic[imglistdic_seq_name] = (jpg_filenames, json_filenames)
-            print(f"ExtractedFramesTrain: Found {len(jpg_filenames)} image-JSON pairs in {self.actual_image_root}.")
+        for img_path in candidate_image_files:
+            json_path = os.path.splitext(img_path)[0] + '.json'
+            if os.path.exists(json_path):
+                self.all_image_files.append(img_path)
+                self.img_to_json_map[img_path] = json_path
+            # else:
+                # print(f"Debug: JSON for {img_path} not found. Skipping.")
+
+        if not self.all_image_files:
+            print(f"Warning: ExtractedFramesTrain - No valid image-JSON pairs found in {self.image_root}. Dataset will be empty.")
+            # self.valid_sequence_start_indices will remain empty, len will be 0.
+            return
+
+        print(f"ExtractedFramesTrain: Found {len(self.all_image_files)} images with corresponding JSON files.")
+
+        if len(self.all_image_files) >= self.seq_len:
+            for i in range(len(self.all_image_files) - self.seq_len + 1):
+                first_frame_dir = os.path.dirname(self.all_image_files[i])
+                is_coherent_sequence = True
+                for k in range(1, self.seq_len):
+                    if os.path.dirname(self.all_image_files[i + k]) != first_frame_dir:
+                        is_coherent_sequence = False
+                        break
+                if is_coherent_sequence:
+                    self.valid_sequence_start_indices.append(i)
+
+        if not self.valid_sequence_start_indices:
+            print(f"Warning: ExtractedFramesTrain - No valid sequences of length {self.seq_len} could be formed from {len(self.all_image_files)} images.")
         else:
-            print(f"Warning: No valid image-JSON pairs found in {self.actual_image_root}. ExtractedFramesTrain will be empty or rely on superclass behavior if imglistdic is empty.")
+            print(f"ExtractedFramesTrain: Initialized. Found {len(self.valid_sequence_start_indices)} valid starting points for sequences of length {self.seq_len}.")
 
-        super(ExtractedFramesTrain, self).__init__(
-            image_root=self.actual_image_root, # Directory containing the frames
-            label_root=self.actual_image_root, # Directory containing the JSONs (same for this class)
-            imglistdic=imglistdic,
-            transform=transform,
-            rgb=rgb,
-            repeat_time=repeat_time,
-            rand_gap=1, # Attempt to load contiguous frames from the list
-            seq_len=seq_len,
-            rand_reverse=False, # Sequences from extracted frames are usually not reversed
-            dynamic_merge=False, # Typically False for this kind of dataset
-            enable_prev_frame=False, # VOSTrain's prev frame logic might differ; direct sampling is fine.
-            merge_prob=0,
-            max_obj_n=max_obj_n,
-            ignore_thresh=ignore_thresh
-        )
-
-        # VOSTrain's __init__ sets self.seqs. If imglistdic was empty, self.seqs would be empty.
-        # If imglistdic had one entry, self.seqs will have one key.
-        # VOSTrain also sets self.seq_len from the passed seq_len.
-        print(f'ExtractedFramesTrain (VOSTrain mode): {len(self.seqs)} sequences loaded (should be 1 if successful). Using seq_len={self.seq_len}.')
-        if not self.seqs:
-             print(f"Warning: ExtractedFramesTrain initialized, but no sequences were loaded into VOSTrain. Check imglistdic population and actual_image_root: {self.actual_image_root}")
-
-
-    def get_image_label(self, seqname, imagelist, lablist, index, is_ref=False):
-        # seqname will be self.placeholder_seq_name
-        # imagelist and lablist are the lists of jpg and json filenames passed in imglistdic
-
-        img_filename = imagelist[index]
-        # lablist might contain .json or .png extensions depending on VOSTrain's typical use.
-        # For this class, we stored .json filenames in lablist.
-        json_filename = lablist[index]
-
-        # self.image_root and self.label_root are set by VOSTrain's __init__
-        # based on what we passed (self.actual_image_root).
-        # VOSTrain's get_image_label uses os.path.join(self.image_root, seqname, frame_name + '.jpg')
-        # Since our seqname is a placeholder and not a real subdir for these files,
-        # we directly use self.image_root (which is actual_image_root) + filename.
-        img_path = os.path.join(self.image_root, img_filename)
-        json_path = os.path.join(self.label_root, json_filename)
-
-        image = cv2.imread(img_path)
-        if image is None:
-            raise FileNotFoundError(f"Image not found: {img_path} (seqname: {seqname}, index: {index})")
-
-        # Store original H, W for mask creation
-        img_h, img_w, _ = image.shape
-        image_np = np.array(image, dtype=np.float32)
-
-        if self.rgb:
-            image_np = image_np[:, :, [2, 1, 0]] # BGR to RGB
-
-        # Default empty mask
-        mask_h, mask_w = img_h, img_w
-        label_np = np.zeros((mask_h, mask_w), dtype=np.uint8)
-
-        if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                try:
-                    annot_data = json.load(f)
-                    shapes = annot_data.get('shapes', [])
-                    json_h = annot_data.get('imageHeight', img_h) # Use image's height if not in json
-                    json_w = annot_data.get('imageWidth', img_w)   # Use image's width if not in json
-                    if shapes:
-                        # Ensure polygon_to_mask is available in the scope
-                        label_np = polygon_to_mask(shapes, json_h, json_w)
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON {json_path}: {e}. Using empty mask.")
-        # else:
-            # print(f"Debug: JSON annotation file {json_path} not found. Using empty mask.")
-
-        return image_np, label_np
-
-    def get_ref_index_v2(self,
-                         seqname, # Will be "" for this class
-                         lablist, # List of JSON filenames
-                         min_fg_pixels=200,
-                         max_try=40, # Default from VOSTrain
-                         total_gap=0, # Default from VOSTrain
-                         ignore_thresh=0.2): # Default from VOSTrain, but we use self.ignore_thresh
-
-        search_range = len(lablist) - total_gap
-        if search_range <= 1:
-            # If only one frame is available (or fewer), that must be the reference.
-            # Or if total_gap makes search_range too small.
+    def __len__(self):
+        if not self.valid_sequence_start_indices:
             return 0
+        return len(self.valid_sequence_start_indices) * self.repeat_time
 
-        bad_indices = []
-        # Initialize ref_index to 0; if loop doesn't find a better one, this will be returned.
-        # This ensures that if all frames are "bad" according to criteria,
-        # the first possible frame is chosen, which is VOSTrain's fallback.
-        ref_index = 0
+    def __getitem__(self, idx):
+        if not self.valid_sequence_start_indices:
+            raise IndexError("ExtractedFramesTrain: No valid sequences to sample from.")
 
-        for _ in range(max_try):
-            # Try to find a random index that hasn't been marked bad.
-            # If search_range is 0 (e.g. len(lablist)=0), np.random.randint will error.
-            # This case should be caught by search_range <=1 check earlier if lablist is empty.
-            if search_range == 0 : # Should not happen if search_range <=1 is handled.
-                 return 0
+        # Adjust index based on repeat_time
+        actual_sample_idx = idx % len(self.valid_sequence_start_indices)
+        start_file_list_index = self.valid_sequence_start_indices[actual_sample_idx]
 
-            ref_index_candidate = np.random.randint(search_range)
+        loaded_images = []
+        loaded_labels = []
+        frame_meta_names = []
 
-            if ref_index_candidate in bad_indices:
-                continue
+        # Determine the directory of the first frame in the sequence for seq_name metadata
+        current_sequence_dir = os.path.dirname(self.all_image_files[start_file_list_index])
 
-            json_filename = lablist[ref_index_candidate]
-            # self.label_root is self.actual_image_root, seqname is "" for this class
-            json_path = os.path.join(self.label_root, seqname, json_filename)
+        for i in range(self.seq_len):
+            current_frame_global_idx = start_file_list_index + i
+            img_path = self.all_image_files[current_frame_global_idx]
+            json_path = self.img_to_json_map[img_path] # Assumes all files in a valid sequence have JSONs
 
-            try:
+            frame_meta_names.append(os.path.basename(img_path))
+
+            image = cv2.imread(img_path)
+            if image is None:
+                raise FileNotFoundError(f"ExtractedFramesTrain: Image not found during sequence loading: {img_path}")
+
+            img_h, img_w, _ = image.shape
+            image_np = np.array(image, dtype=np.float32)
+
+            if self.rgb:
+                image_np = image_np[:, :, [2, 1, 0]]
+
+            mask_h, mask_w = img_h, img_w
+            label_np = np.zeros((mask_h, mask_w), dtype=np.uint8) # Default empty mask
+
+            if os.path.exists(json_path):
                 with open(json_path, 'r') as f:
-                    annot_data = json.load(f)
+                    try:
+                        annot_data = json.load(f)
+                        shapes = annot_data.get('shapes', [])
+                        json_h = annot_data.get('imageHeight', img_h)
+                        json_w = annot_data.get('imageWidth', img_w)
+                        if shapes:
+                            label_np = polygon_to_mask(shapes, json_h, json_w)
+                    except json.JSONDecodeError as e:
+                        print(f"ExtractedFramesTrain: Error decoding JSON {json_path}: {e}. Using empty mask.")
+            # No else needed here as we pre-filtered all_image_files to only include those with JSONs
 
-                shapes = annot_data.get('shapes', [])
-                height = annot_data.get('imageHeight')
-                width = annot_data.get('imageWidth')
+            loaded_images.append(image_np)
+            loaded_labels.append(label_np)
 
-                if height is None or width is None:
-                    # Need to get image dimensions from the actual image file
-                    # self.imglistdic[seqname] is a tuple (jpg_list, json_list)
-                    # The first element of the tuple [0] is the jpg_list
-                    img_filename = self.imglistdic[seqname][0][ref_index_candidate]
-                    img_path = os.path.join(self.image_root, seqname, img_filename)
+        sample = {}
+        sample['ref_img'] = loaded_images[0]
+        sample['ref_label'] = loaded_labels[0]
 
-                    if not os.path.exists(img_path):
-                        # print(f"ExtractedFramesTrain DEBUG: Image file {img_path} not found for dimension check. Skipping ref_index {ref_index_candidate}")
-                        bad_indices.append(ref_index_candidate)
-                        continue
+        if self.seq_len >= 2:
+            sample['prev_img'] = loaded_images[1]
+            sample['prev_label'] = loaded_labels[1]
+            # curr_img/label should be a list of remaining frames
+            sample['curr_img'] = loaded_images[2:]
+            sample['curr_label'] = loaded_labels[2:]
+        else: # seq_len == 1
+            sample['prev_img'] = loaded_images[0].copy() # Use ref as prev
+            sample['prev_label'] = loaded_labels[0].copy()
+            sample['curr_img'] = [] # Empty list
+            sample['curr_label'] = [] # Empty list
 
-                    img_for_dim = cv2.imread(img_path)
-                    if img_for_dim is None:
-                        # print(f"ExtractedFramesTrain DEBUG: Failed to load image {img_path} for dimension check. Skipping ref_index {ref_index_candidate}")
-                        bad_indices.append(ref_index_candidate)
-                        continue
-                    height, width, _ = img_for_dim.shape
+        obj_ids_ref = list(np.unique(loaded_labels[0]))
+        obj_num = 0
+        valid_obj_ids = [oid for oid in obj_ids_ref if oid != 0 and oid != 255] # Assuming 255 is an ignore label
+        if valid_obj_ids:
+            obj_num = max(valid_obj_ids)
 
-                if not shapes:
-                    # print(f"ExtractedFramesTrain DEBUG: No shapes in {json_path} for ref_index {ref_index_candidate}. Skipping.")
-                    bad_indices.append(ref_index_candidate)
-                    continue
+        # Determine seq_name for meta
+        # If image_root is "extracted_frames" and frames are directly under it, seq_name might be "extracted_frames"
+        # If frames are under "extracted_frames/video1", "extracted_frames/video2", then seq_name is "video1", "video2"
+        # current_sequence_dir gives the full path to the directory of the first frame.
+        if self.image_root == current_sequence_dir or os.path.abspath(self.image_root) == os.path.abspath(current_sequence_dir) :
+             # Frames are directly in image_root, use a generic name or first frame name
+            seq_name_for_meta = os.path.splitext(frame_meta_names[0])[0] # Use first frame name as proxy for seq name
+        else:
+            seq_name_for_meta = os.path.basename(current_sequence_dir)
 
-                ref_label_mask = polygon_to_mask(shapes, height, width)
 
-                num_ignore_pixels = np.sum(ref_label_mask == 255)
-                num_obj_pixels = np.sum((ref_label_mask > 0) & (ref_label_mask != 255))
+        sample['meta'] = {
+            'seq_name': seq_name_for_meta,
+            'frame_num': len(self.all_image_files), # Total frames in this specific "video" or sub-folder
+            'obj_num': obj_num,
+            'dense_seq': True, # All frames are "real" for this loader
+            'frame_names': frame_meta_names # List of frame filenames in the current sequence
+        }
 
-                # Using self.ignore_thresh (instance variable) set during __init__
-                if num_obj_pixels > min_fg_pixels and \
-                   (num_ignore_pixels / (num_obj_pixels + 1e-6)) <= self.ignore_thresh:
-                    ref_index = ref_index_candidate # Found a good index
-                    break # Exit loop, ref_index is set
-                else:
-                    bad_indices.append(ref_index_candidate)
+        if self.transform is not None:
+            sample = self.transform(sample)
 
-            except FileNotFoundError:
-                # print(f"ExtractedFramesTrain DEBUG: JSON file not found {json_path} for ref_index {ref_index_candidate}. Skipping.")
-                bad_indices.append(ref_index_candidate)
-                continue
-            except json.JSONDecodeError:
-                # print(f"ExtractedFramesTrain DEBUG: JSON decode error for {json_path} for ref_index {ref_index_candidate}. Skipping.")
-                bad_indices.append(ref_index_candidate)
-                continue
-            except Exception as e:
-                # print(f"ExtractedFramesTrain DEBUG: Error processing ref_index {ref_index_candidate} ({json_path}): {e}. Skipping.")
-                bad_indices.append(ref_index_candidate)
-                continue
-
-        return ref_index
-
-# Note: __len__ and __getitem__ are inherited from VOSTrain.
-# VOSTrain.sample_sequence will call our overridden get_image_label.
+        return sample
