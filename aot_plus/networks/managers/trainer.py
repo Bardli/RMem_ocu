@@ -590,10 +590,11 @@ class Trainer(object):
                         now_label,
                         obj_nums,
                     ) * 100
-                    dist.all_reduce(now_loss)
-                    dist.all_reduce(now_iou)
-                    now_loss /= self.gpu_num
-                    now_iou /= self.gpu_num
+                    if self.cfg.DIST_ENABLE:
+                        dist.all_reduce(now_loss)
+                        dist.all_reduce(now_iou)
+                        now_loss /= self.gpu_num
+                        now_iou /= self.gpu_num
                     if self.rank == 0:
                         running_losses[idx].update(now_loss.item())
                         running_ious[idx].update(now_iou.item())
