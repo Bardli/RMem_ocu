@@ -647,28 +647,51 @@ class SimplifiedTransformerBlock(nn.Module):
                 self.attn_values.cpu().numpy(), self.attn_indices.cpu().numpy()
             self.attn_indices = np.unravel_index(self.attn_indices, (self.record_T, hw))
 
+        short_attn = None  # Initialize short_attn
+
         if self.linear_q:
-            tgt3 = self.short_term_attn(
+            # Assuming short_term_attn might return a tuple even if only tgt3 is needed here,
+            # or just a single tensor. Let's ensure tgt3 is correctly extracted.
+            st_output = self.short_term_attn(
                 local_Q,
                 torch.cat((local_K, curr_K), 0),
                 torch.cat((local_V, curr_V), 0),
-            )[0]
+                is_return_attn_weight=save_atten_weights, # Pass flag consistently
+            )
+            if isinstance(st_output, tuple) and len(st_output) > 0:
+                tgt3 = st_output[0]
+                if save_atten_weights and len(st_output) > 1:
+                    short_attn = st_output[1]
+            else:
+                tgt3 = st_output
+                # short_attn remains None if not returned
         else:
-            tgt3, short_attn = self.short_term_attn(
+            st_output = self.short_term_attn(
                 local_Q,
                 self.norm4(local_K + curr_K),
                 self.norm4(local_V + curr_V),
                 is_return_attn_weight=save_atten_weights,
             )
+            if isinstance(st_output, tuple) and len(st_output) > 0:
+                tgt3 = st_output[0]
+                if save_atten_weights and len(st_output) > 1:
+                    short_attn = st_output[1]
+            else:
+                tgt3 = st_output
+                # short_attn remains None if not returned
+
         if save_atten_weights:
-            # bs, head, hw, hw
-            short_attn = short_attn.mean(dim=1) # bs, hw, hw
-            assert short_attn.size(0) == 1 # only for evaluation
-            short_attn = short_attn.squeeze(0) # hw, hw
-            self.short_attn_values, self.short_attn_indices = \
-                short_attn.detach().topk(32, dim=-1)
-            self.short_attn_values, self.short_attn_indices = \
-                self.short_attn_values.cpu().numpy(), self.short_attn_indices.cpu().numpy()
+            if short_attn is not None: # Check if short_attn was actually assigned
+                # bs, head, hw, hw
+                short_attn = short_attn.mean(dim=1) # bs, hw, hw
+                assert short_attn.size(0) == 1 # only for evaluation
+                short_attn = short_attn.squeeze(0) # hw, hw
+                self.short_attn_values, self.short_attn_indices = \
+                    short_attn.detach().topk(32, dim=-1)
+                self.short_attn_values, self.short_attn_indices = \
+                    self.short_attn_values.cpu().numpy(), self.short_attn_indices.cpu().numpy()
+            # else:
+                # print("DEBUG: short_attn was None, skipping its processing in save_atten_weights block.")
 
         _tgt3 = tgt3
 
