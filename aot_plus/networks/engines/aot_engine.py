@@ -723,3 +723,10 @@ class AOTInferEngine(nn.Module):
         self.input_size_2d = self.aot_engines[0].input_size_2d
         self.enc_size_2d = self.aot_engines[0].enc_size_2d
         self.enc_hw = self.aot_engines[0].enc_hw
+
+    def predict_current_mask(self, output_size=None, return_prob=False):
+        if not self.aot_engines:
+            raise RuntimeError("No AOTEngine available to predict mask.")
+        # Assuming the first engine's prediction is the one desired,
+        # or that logic for multiple engines would be more complex and is not yet defined.
+        return self.aot_engines[0].predict_current_mask(output_size=output_size, return_prob=return_prob)
