@@ -73,7 +73,7 @@ def load_network_and_optimizer_v2(net, opt, pretrained_dir, gpu, scaler=None):
 
 
 def load_network(net, pretrained_dir, gpu):
-    device_map = 'cpu' if gpu == -1 or not torch.cuda.is_available() else torch.device("cuda:" + str(gpu))
+    device_map = 'cpu' if gpu == -1 or not torch.cuda.is_available() else torch.device(gpu)
     pretrained = torch.load(pretrained_dir,
                             map_location=device_map)
     if 'state_dict' in pretrained.keys():
